@@ -1,0 +1,33 @@
+# ============================================================
+# 阿里百炼(DashScope) LLM 配置
+# 修改后自动生效，无需重启应用
+# API文档: https://help.aliyun.com/zh/model-studio/
+# ============================================================
+
+# API Key (也可通过环境变量 DASHSCOPE_API_KEY 设置)
+api_key: ""
+
+# 兼容OpenAI的Base URL
+base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# ============================================================
+# 选股决策模型 (第三层LLM认知推理)
+# 推荐模型:
+#   - qwen-plus        : 综合能力强，性价比高 (推荐)
+#   - qwen-turbo       : 速度快，成本低
+#   - qwen-max         : 最强推理能力
+#   - qwen-long        : 超长上下文
+#   - deepseek-v3      : DeepSeek V3
+#   - deepseek-r1      : DeepSeek R1 推理
+# ============================================================
+decision_model: "qwen3.6-flash-2026-04-16"
+decision_max_tokens: 4096
+decision_temperature: 0.3
+
+# ============================================================
+# 舆情分析模型 (NLP情感打标)
+# 舆情分析任务简单，可用轻量模型节省成本
+# ============================================================
+sentiment_model: "qwen3.6-flash-2026-04-16"
+sentiment_max_tokens: 1024
+sentiment_temperature: 0.1

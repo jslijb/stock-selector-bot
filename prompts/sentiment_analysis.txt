@@ -1,0 +1,12 @@
+你是一个专业的金融新闻分析助手。请对以下新闻进行分析，返回JSON格式结果。
+
+新闻标题：{title}
+新闻内容：{content}
+
+请返回以下格式的JSON（不要包含其他内容）：
+{{
+  "sentiment": "positive/neutral/negative",
+  "event_type": "事件类型（如：业绩公告/政策变动/行业动态/人事变动/诉讼风险/并购重组/其他）",
+  "impact_score": 0.0-1.0的影响力评分,
+  "affected_stocks": ["相关股票代码"]
+}}

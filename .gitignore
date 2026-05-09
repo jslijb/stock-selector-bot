@@ -1,0 +1,4 @@
+__pycache__/
+.env
+venv/
+data/stock_agent.duckdb

@@ -1,0 +1,45 @@
+project:
+  name: "cognitive-stock-agent"
+  version: "0.1.0"
+
+database:
+  duckdb_path: "./data/stock_agent.duckdb"
+
+tushare:
+  token_env: "TUSHARE_TOKEN"
+  rate_limit: 200
+
+# LLM配置已移至 config/llm_config.yaml（支持热加载）
+# 修改 llm_config.yaml 后自动生效，无需重启
+
+embedding:
+  model_name: "BAAI/bge-large-zh-v1.5"
+  device: "cpu"
+
+chromadb:
+  persist_dir: "./data/chroma_db"
+  collection_name: "market_state_memory"
+
+factors:
+  count: 150
+  neutralization: "industry"
+  extreme_value_method: "mad"
+  zscore_window: 252
+
+reasoning:
+  layer1_top_pct: 0.20
+  layer2_top_n: 50
+  layer3_final_n: 20
+
+risk:
+  max_single_weight: 0.10
+  industry_deviation: 0.05
+
+evolution:
+  frequency: "monthly"
+  ic_window_months: 3
+  weight_bounds: [0.01, 0.30]
+
+scheduler:
+  check_missing: true
+  auto_backfill: true
