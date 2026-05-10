@@ -102,8 +102,7 @@ class FactorEvolver:
         try:
             raw = self.db.fetch_df(sql, [_to_date(start_str), _to_date(current_date)])
         except Exception as e:
-            logger.error(f"获取因子数据失败: {e}")
-            return {}
+            raise RuntimeError(f"获取因子数据失败: {e}") from e
 
         if raw.empty:
             logger.warning("无数据可进化")

@@ -16,7 +16,7 @@ from ..factors.registry import FactorRegistry
 from ..memory.memory import EpisodicMemory
 
 
-STOCK_SELECTION_PROMPT = """你是一位专业的量化投资经理，请根据以下信息进行选股决策。
+STOCK_SELECTION_PROMPT = """你是量化选股决策引擎。根据以下信息输出选股决策。
 
 ## 当前市场环境
 {market_env}
@@ -27,15 +27,11 @@ STOCK_SELECTION_PROMPT = """你是一位专业的量化投资经理，请根据�
 ## 精选候选池（共{candidate_count}只）
 {candidates}
 
-## 任务要求
-1. 从候选池中挑选 {final_n} 只股票
-2. 为每只股票分配权重，weight必须是0到1之间的小数（如0.05表示5%）
-3. 所有weight的总和必须等于1.0
-4. 单票weight不超过{max_weight_pct}
-5. 输出严格的JSON格式
+## 输出要求
+从候选池中挑选 {final_n} 只股票，为每只分配权重(weight为0-1之间小数，总和=1.0，单票<={max_weight_pct})。
 
-## 输出格式示例
-```json
+直接输出JSON，不要输出任何其他文字、解释或markdown标记。以{{开头，以}}结尾。
+
 {{
   "holdings": [
     {{
@@ -44,12 +40,9 @@ STOCK_SELECTION_PROMPT = """你是一位专业的量化投资经理，请根据�
       "reason": "选择理由"
     }}
   ],
-  "market_view": "当前市场观点总结",
+  "market_view": "市场观点",
   "risk_notes": "风险提示"
 }}
-```
-
-重要：weight必须是0-1之间的小数，不是百分比！总和必须等于1.0！
 """
 
 
@@ -157,8 +150,7 @@ class ReasoningEngine:
             logger.info(f"训练数据: {len(train_X)} 样本, {train_X.shape[1]} 特征, {len(date_list)} 天")
             return train_X, train_y
         except Exception as e:
-            logger.warning(f"训练标签构建失败: {e}")
-            return None
+            raise RuntimeError(f"训练标签构建失败: {e}") from e
 
     def layer2_ml_select(self, factor_df: pd.DataFrame, scores: pd.Series,
                          labels: Optional[pd.Series] = None,
@@ -205,7 +197,7 @@ class ReasoningEngine:
                 shap_df = pd.DataFrame(shap_values, columns=feature_names, index=selected.index)
                 logger.info("SHAP解释完成")
             except Exception as e:
-                logger.opt(exception=True).warning(f"SHAP计算失败: {e}")
+                raise RuntimeError(f"SHAP计算失败: {e}") from e
 
         return ml_scores, shap_df
 
@@ -254,17 +246,27 @@ class ReasoningEngine:
             )
             text = resp.choices[0].message.content.strip()
             text = text.replace("```json", "").replace("```", "").strip()
+            if not text:
+                raise RuntimeError("LLM返回空内容")
+            if resp.choices[0].finish_reason == "length":
+                raise RuntimeError("LLM输出被max_tokens截断，JSON不完整，请增大max_tokens或简化prompt")
+            brace_start = text.find("{")
+            if brace_start < 0:
+                raise RuntimeError(f"LLM输出不含JSON: {text[:200]}")
+            if brace_start > 0:
+                logger.warning(f"LLM在JSON前输出了{brace_start}字符非JSON内容，已截取")
+                text = text[brace_start:]
             result = json.loads(text)
+            if "holdings" not in result or not result["holdings"]:
+                raise RuntimeError("LLM返回JSON无holdings字段")
+            for h in result["holdings"]:
+                if not isinstance(h.get("weight"), (int, float)) or h["weight"] <= 0 or h["weight"] > 1:
+                    raise RuntimeError(f"LLM返回异常权重: {h}")
             logger.info(f"LLM选股完成: {len(result.get('holdings', []))} 只")
             return result
-        except Exception as e:
-            logger.opt(exception=True).error(f"LLM决策失败: {e}")
-            top = ml_scores.nlargest(self.cfg.reasoning.layer3_final_n)
-            return {
-                "holdings": [{"ts_code": code, "weight": 1.0/len(top), "reason": "LLM失败回退"} for code in top.index],
-                "market_view": f"LLM调用失败: {e}",
-                "risk_notes": "",
-            }
+        except (json.JSONDecodeError, RuntimeError) as e:
+            logger.error(f"LLM决策失败: {e}")
+            raise
 
     def _format_candidates(self, candidates: pd.DataFrame, ml_scores: pd.Series,
                            shap_df: Optional[pd.DataFrame]) -> str:

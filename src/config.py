@@ -48,18 +48,31 @@ class ReasoningConfig:
 class RiskConfig:
     max_single_weight: float = 0.10
     industry_deviation: float = 0.05
-    max_price: float = 150.0
-    bj_min_market_cap: float = 30.0
-    bj_min_price: float = 10.0
+    max_price: float = 100.0
+    min_market_cap: float = 20.0
+    min_turnover_rate: float = 2.0
+    min_avg_amount: float = 5000.0
+    min_revenue: float = 5.0
+    max_pe_noncyclical: float = 50.0
     exclude_st: bool = True
-    loss_lookback_years: int = 5
-    loss_min_years: int = 3
+    enable_bj: bool = False
+    enable_kcb: bool = False
+    bj_min_market_cap: float = 10.0
+    kcb_min_market_cap: float = 15.0
     excluded_industries: tuple = (
         "房地产", "房地产开发", "房地产服务",
         "纺织制造", "服装",
-        "造纸", "包装印刷",
         "影视", "院线",
     )
+    cyclical_industries: tuple = (
+        "煤炭", "石油石化", "有色金属", "贵金属", "小金属",
+        "钢铁", "基础化工", "建筑材料", "水泥", "玻璃玻纤",
+        "工程机械", "通用设备", "轨交设备", "电网设备", "锂电",
+        "汽车", "乘用车", "家电",
+        "航运", "航空", "船舶制造",
+        "证券", "保险",
+    )
+    cyclical_max_debt_ratio: float = 70.0
 
 
 @dataclass
@@ -226,6 +239,16 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         cfg.risk = RiskConfig(
             max_single_weight=risk_raw.get("max_single_weight", cfg.risk.max_single_weight),
             industry_deviation=risk_raw.get("industry_deviation", cfg.risk.industry_deviation),
+            max_price=risk_raw.get("max_price", cfg.risk.max_price),
+            min_market_cap=risk_raw.get("min_market_cap", cfg.risk.min_market_cap),
+            min_turnover_rate=risk_raw.get("min_turnover_rate", cfg.risk.min_turnover_rate),
+            min_avg_amount=risk_raw.get("min_avg_amount", cfg.risk.min_avg_amount),
+            min_revenue=risk_raw.get("min_revenue", cfg.risk.min_revenue),
+            max_pe_noncyclical=risk_raw.get("max_pe_noncyclical", cfg.risk.max_pe_noncyclical),
+            enable_bj=risk_raw.get("enable_bj", cfg.risk.enable_bj),
+            enable_kcb=risk_raw.get("enable_kcb", cfg.risk.enable_kcb),
+            bj_min_market_cap=risk_raw.get("bj_min_market_cap", cfg.risk.bj_min_market_cap),
+            kcb_min_market_cap=risk_raw.get("kcb_min_market_cap", cfg.risk.kcb_min_market_cap),
         )
 
         evo_raw = raw.get("evolution", {})

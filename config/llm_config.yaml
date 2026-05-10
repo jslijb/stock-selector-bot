@@ -20,7 +20,7 @@ base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 #   - deepseek-v3      : DeepSeek V3
 #   - deepseek-r1      : DeepSeek R1 推理
 # ============================================================
-decision_model: "qwen3.6-flash-2026-04-16"
+decision_model: "MiniMax-M2.5"
 decision_max_tokens: 4096
 decision_temperature: 0.3
 
@@ -28,6 +28,6 @@ decision_temperature: 0.3
 # 舆情分析模型 (NLP情感打标)
 # 舆情分析任务简单，可用轻量模型节省成本
 # ============================================================
-sentiment_model: "qwen3.6-flash-2026-04-16"
+sentiment_model: "MiniMax-M2.5"
 sentiment_max_tokens: 1024
 sentiment_temperature: 0.1

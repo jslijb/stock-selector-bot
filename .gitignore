@@ -1,4 +1,6 @@
 __pycache__/
 .env
 venv/
-data/stock_agent.duckdb
+data/
+logs/
+新需求.txt

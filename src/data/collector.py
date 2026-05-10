@@ -9,6 +9,7 @@ from ..config import get_config
 from .db import Database
 from .schema import init_schema
 from .money_flow import MoneyFlowEstimator
+from .daily_basic_collector import DailyBasicCollector
 
 
 class TushareCollector:
@@ -22,6 +23,7 @@ class TushareCollector:
         self.pro = ts.pro_api()
         self._rate_delay = 60.0 / (self.cfg.tushare_rate_limit / 3.0)
         self._mf_estimator = MoneyFlowEstimator()
+        self._db_collector = DailyBasicCollector()
         self._failed_dates: list = []
 
     def _rate_limit(self):
@@ -233,10 +235,48 @@ class TushareCollector:
         return df
 
     def fetch_daily_basic(self, trade_date: str) -> pd.DataFrame:
-        df = self.pro.daily_basic(trade_date=trade_date, fields="ts_code,trade_date,close,pe,pb,ps,dv_ratio,turnover_rate,turnover_rate_f,volume_ratio")
-        self._rate_limit()
-        if df is not None and len(df) > 0:
-            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d")
+        dt = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+        try:
+            cnt = self.db.fetch_one(
+                "SELECT COUNT(*) FROM daily_basic WHERE trade_date = ?", [dt]
+            )
+            if cnt and cnt[0] > 0:
+                logger.debug(f"daily_basic已存在，跳过: {trade_date}")
+                return pd.DataFrame()
+        except Exception:
+            logger.opt(exception=True).debug("daily_basic存在性检查异常")
+
+        logger.info(f"baostock获取每日指标: {trade_date}")
+        stock_list = None
+        try:
+            price_df = self.db.fetch_df(
+                "SELECT DISTINCT ts_code FROM daily_price WHERE trade_date = ?",
+                [dt],
+            )
+            if not price_df.empty:
+                stock_list = price_df["ts_code"].tolist()
+        except Exception:
+            logger.opt(exception=True).debug("获取每日指标股票列表异常")
+
+        df = self._db_collector.fetch_daily_basic(trade_date, stock_list)
+        if not df.empty:
+            self._upsert_df(df, "daily_basic")
+            logger.info(f"daily_basic {trade_date}: {len(df)} 条")
+
+        if self.cfg.risk.enable_bj:
+            try:
+                bj_cnt = self.db.fetch_one(
+                    "SELECT COUNT(*) FROM daily_basic WHERE trade_date = ? AND ts_code LIKE '%.BJ'",
+                    [dt],
+                )
+                if bj_cnt is None or bj_cnt[0] == 0:
+                    bj_df = self._db_collector.fetch_bj_daily_basic(trade_date)
+                    if not bj_df.empty:
+                        self._upsert_df(bj_df, "daily_basic")
+                        logger.info(f"北交所daily_basic {trade_date}: {len(bj_df)} 条")
+            except Exception as e:
+                logger.opt(exception=True).warning(f"北交所每日指标采集失败: {e}")
+
         return df
 
     def _has_daily_data(self, trade_date: str) -> bool:
@@ -260,6 +300,10 @@ class TushareCollector:
             return
         if self._has_daily_data(trade_date):
             logger.debug(f"数据已存在，跳过采集: {trade_date}")
+            try:
+                self.fetch_daily_basic(trade_date)
+            except Exception as e:
+                logger.opt(exception=True).warning(f"每日指标补采失败 {trade_date}: {e}")
             return
         logger.info(f"=== 采集日线数据: {trade_date} ===")
         price_df = None
@@ -276,6 +320,10 @@ class TushareCollector:
             self.fetch_adj_factor(trade_date)
         except Exception as e:
             logger.opt(exception=True).debug(f"复权因子采集跳过 {trade_date}: {e}")
+        try:
+            self.fetch_daily_basic(trade_date)
+        except Exception as e:
+            logger.opt(exception=True).warning(f"每日指标采集失败 {trade_date}: {e}")
         if not skip_money_flow:
             try:
                 self.fetch_money_flow(trade_date)

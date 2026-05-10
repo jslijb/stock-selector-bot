@@ -164,6 +164,24 @@ CREATE TABLE IF NOT EXISTS stock_basic (
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """,
+    "daily_basic": """
+CREATE TABLE IF NOT EXISTS daily_basic (
+    ts_code         VARCHAR NOT NULL,
+    trade_date      DATE NOT NULL,
+    close           DOUBLE,
+    pe_ttm          DOUBLE,
+    pb              DOUBLE,
+    ps_ttm          DOUBLE,
+    pcf_ttm         DOUBLE,
+    dv_ratio        DOUBLE,
+    turnover_rate   DOUBLE,
+    turnover_rate_f DOUBLE,
+    volume_ratio    DOUBLE,
+    total_mv        DOUBLE,
+    circ_mv         DOUBLE,
+    PRIMARY KEY (ts_code, trade_date)
+)
+""",
 }
 
 SEQUENCE_SQL = [

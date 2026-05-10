@@ -1,3 +1,4 @@
+import time
 import pandas as pd
 import numpy as np
 from loguru import logger
@@ -48,27 +49,49 @@ class Scheduler:
 
         bj_codes = factor_pivot.index.str.endswith(".BJ")
         if bj_codes.any():
-            try:
-                bj_list = factor_pivot.index[bj_codes].tolist()
-                placeholders = ",".join(["?"] * len(bj_list))
-                mv_df = self.db.fetch_df(
-                    f"""SELECT ts_code, total_mv FROM daily_basic
-                    WHERE trade_date = ? AND ts_code IN ({placeholders})""",
-                    [dt] + bj_list,
-                )
-                if not mv_df.empty:
-                    small_bj = set(mv_df[mv_df["total_mv"] < self.cfg.risk.bj_min_market_cap]["ts_code"])
-                else:
-                    price_df_bj = self.db.fetch_df(
-                        f"""SELECT ts_code, close FROM daily_price
-                        WHERE trade_date = ? AND ts_code IN ({placeholders})""",
-                        [dt] + bj_list,
-                    )
-                    small_bj = set(price_df_bj[price_df_bj["close"] < self.cfg.risk.bj_min_price]["ts_code"]) if not price_df_bj.empty else set(bj_list)
-                mask &= ~factor_pivot.index.isin(small_bj)
-            except Exception:
-                logger.opt(exception=True).debug("北交所过滤异常，使用全量北交所代码")
+            if not self.cfg.risk.enable_bj:
                 mask &= ~bj_codes
+                logger.debug(f"过滤北交所: {bj_codes.sum()} 只")
+            else:
+                self._ensure_board_data("BJ", trade_date)
+                try:
+                    if self.db.table_exists("daily_basic"):
+                        bj_list = factor_pivot.index[bj_codes].tolist()
+                        placeholders = ",".join(["?"] * len(bj_list))
+                        mv_df = self.db.fetch_df(
+                            f"""SELECT ts_code, total_mv FROM daily_basic
+                            WHERE trade_date = ? AND ts_code IN ({placeholders})""",
+                            [dt] + bj_list,
+                        )
+                        if not mv_df.empty:
+                            bj_mv_thresh = self.cfg.risk.bj_min_market_cap * 10000.0
+                            small_bj = set(mv_df[mv_df["total_mv"] < bj_mv_thresh]["ts_code"])
+                            mask &= ~factor_pivot.index.isin(small_bj)
+                except Exception as e:
+                    raise RuntimeError(f"北交所市值过滤失败，数据质量不可靠: {e}") from e
+
+        kcb_codes = factor_pivot.index.str.startswith("688")
+        if kcb_codes.any():
+            if not self.cfg.risk.enable_kcb:
+                mask &= ~kcb_codes
+                logger.debug(f"过滤科创板: {kcb_codes.sum()} 只")
+            else:
+                self._ensure_board_data("KCB", trade_date)
+                try:
+                    if self.db.table_exists("daily_basic"):
+                        kcb_list = factor_pivot.index[kcb_codes].tolist()
+                        placeholders = ",".join(["?"] * len(kcb_list))
+                        mv_df = self.db.fetch_df(
+                            f"""SELECT ts_code, total_mv FROM daily_basic
+                            WHERE trade_date = ? AND ts_code IN ({placeholders})""",
+                            [dt] + kcb_list,
+                        )
+                        if not mv_df.empty:
+                            kcb_mv_thresh = self.cfg.risk.kcb_min_market_cap * 10000.0
+                            small_kcb = set(mv_df[mv_df["total_mv"] < kcb_mv_thresh]["ts_code"])
+                            mask &= ~factor_pivot.index.isin(small_kcb)
+                except Exception as e:
+                    raise RuntimeError(f"科创板市值过滤失败，数据质量不可靠: {e}") from e
 
         if self.cfg.risk.exclude_st:
             try:
@@ -76,8 +99,8 @@ class Scheduler:
                 if not names.empty:
                     st_codes = set(names[names["name"].str.contains("ST", case=False, na=False)]["ts_code"])
                     mask &= ~factor_pivot.index.isin(st_codes)
-            except Exception:
-                logger.opt(exception=True).debug("ST/退市风险股票过滤异常，已跳过")
+            except Exception as e:
+                raise RuntimeError(f"ST过滤失败，退市风险股无法排除: {e}") from e
 
         try:
             price_df = self.db.fetch_df(
@@ -86,47 +109,235 @@ class Scheduler:
             if not price_df.empty:
                 high_codes = set(price_df[price_df["close"] > self.cfg.risk.max_price]["ts_code"])
                 mask &= ~factor_pivot.index.isin(high_codes)
-        except Exception:
-            logger.opt(exception=True).debug("高价股过滤异常，已跳过")
+        except Exception as e:
+            raise RuntimeError(f"高价股过滤失败: {e}") from e
 
-        if self.cfg.risk.loss_min_years > 0:
-            try:
-                lookback = self.cfg.risk.loss_lookback_years
-                min_loss = self.cfg.risk.loss_min_years
-                current_year = datetime.now().year
-                periods = [f"{y}" for y in range(current_year - lookback + 1, current_year)]
-                period_cond = "','".join(periods)
-                loss_df = self.db.fetch_df(
-                    f"""SELECT ts_code, COUNT(*) as loss_years FROM financials
-                    WHERE report_period IN ('{period_cond}') AND net_profit < 0
-                    GROUP BY ts_code HAVING loss_years >= {min_loss}"""
+        try:
+            if self.db.table_exists("daily_basic"):
+                mv_df = self.db.fetch_df(
+                    "SELECT ts_code, total_mv FROM daily_basic WHERE trade_date = ?", [dt]
                 )
-                if not loss_df.empty:
-                    mask &= ~factor_pivot.index.isin(set(loss_df["ts_code"]))
-            except Exception:
-                logger.opt(exception=True).debug("亏损年数过滤异常，已跳过")
+                if not mv_df.empty:
+                    mv_threshold = self.cfg.risk.min_market_cap * 10000.0
+                    small_mv = set(mv_df[mv_df["total_mv"] < mv_threshold]["ts_code"])
+                    mask &= ~factor_pivot.index.isin(small_mv)
+        except Exception as e:
+            raise RuntimeError(f"市值过滤失败: {e}") from e
+
+        try:
+            if self.db.table_exists("daily_basic"):
+                turn_df = self.db.fetch_df(
+                    "SELECT ts_code, turnover_rate FROM daily_basic WHERE trade_date = ?", [dt]
+                )
+                if not turn_df.empty:
+                    low_turn = set(turn_df[turn_df["turnover_rate"] < self.cfg.risk.min_turnover_rate]["ts_code"])
+                    mask &= ~factor_pivot.index.isin(low_turn)
+        except Exception as e:
+            raise RuntimeError(f"换手率过滤失败: {e}") from e
+
+        try:
+            amount_df = self.db.fetch_df(
+                "SELECT ts_code, amount FROM daily_price WHERE trade_date = ?", [dt]
+            )
+            if not amount_df.empty:
+                low_amount = set(amount_df[amount_df["amount"] < self.cfg.risk.min_avg_amount * 10.0]["ts_code"])
+                mask &= ~factor_pivot.index.isin(low_amount)
+        except Exception as e:
+            raise RuntimeError(f"成交额过滤失败: {e}") from e
+
+        if not self._industry_map:
+            self._industry_map = self.collector.get_industry_map()
+
+        cyclical_set = set(self.cfg.risk.cyclical_industries)
+
+        try:
+            fin_df = self.db.fetch_df(
+                "SELECT ts_code, total_revenue, net_profit, total_hldr_eqy, total_liab, total_assets FROM financials"
+            )
+        except Exception as e:
+            raise RuntimeError(f"财务数据查询失败，无法执行基本面过滤: {e}") from e
+
+        if not fin_df.empty:
+            latest_fin = fin_df.sort_values("ts_code").groupby("ts_code").last()
+
+            revenue_thresh = self.cfg.risk.min_revenue * 1e8
+            low_revenue = set(latest_fin[latest_fin["total_revenue"] < revenue_thresh].index)
+            mask &= ~factor_pivot.index.isin(low_revenue)
+
+            neg_equity = set(latest_fin[latest_fin["total_hldr_eqy"] <= 0].index)
+            mask &= ~factor_pivot.index.isin(neg_equity)
+
+            screened_codes = factor_pivot.index[mask]
+            non_cyclical_loss = set()
+            cyclical_fail = set()
+            for code in screened_codes:
+                if code not in latest_fin.index:
+                    continue
+                row = latest_fin.loc[code]
+                industry = self._industry_map.get(code, "")
+                is_cyclical = industry and any(c in industry for c in cyclical_set)
+
+                if not is_cyclical:
+                    if row.get("net_profit", 0) <= 0:
+                        non_cyclical_loss.add(code)
+                else:
+                    try:
+                        debt_ratio = row.get("total_liab", 0) / row.get("total_assets", 1) * 100
+                        if debt_ratio > self.cfg.risk.cyclical_max_debt_ratio:
+                            cyclical_fail.add(code)
+                    except Exception:
+                        pass
+
+            mask &= ~factor_pivot.index.isin(non_cyclical_loss)
+            mask &= ~factor_pivot.index.isin(cyclical_fail)
 
         excluded_ind = set(self.cfg.risk.excluded_industries)
         if excluded_ind:
-            if not self._industry_map:
-                self._industry_map = self.collector.get_industry_map()
             ind_codes = set()
-            for code in factor_pivot.index:
+            for code in factor_pivot.index[mask]:
                 ind = self._industry_map.get(code, "")
                 if ind and any(ex in ind for ex in excluded_ind):
                     ind_codes.add(code)
             mask &= ~factor_pivot.index.isin(ind_codes)
 
+        try:
+            if self.db.table_exists("daily_basic"):
+                pe_df = self.db.fetch_df(
+                    "SELECT ts_code, pe_ttm FROM daily_basic WHERE trade_date = ?", [dt]
+                )
+                if not pe_df.empty:
+                    pe_map = dict(zip(pe_df["ts_code"], pe_df["pe_ttm"]))
+                    screened_codes = factor_pivot.index[mask]
+                    bad_pe_codes = set()
+                    for code in screened_codes:
+                        industry = self._industry_map.get(code, "")
+                        is_cyc = industry and any(c in industry for c in cyclical_set)
+                        if is_cyc:
+                            continue
+                        pe_val = pe_map.get(code)
+                        if pe_val is None or np.isnan(pe_val) or pe_val <= 0 or pe_val > self.cfg.risk.max_pe_noncyclical:
+                            bad_pe_codes.add(code)
+                    mask &= ~factor_pivot.index.isin(bad_pe_codes)
+        except Exception as e:
+            raise RuntimeError(f"PE过滤失败: {e}") from e
+
         result = factor_pivot.loc[mask]
         removed = before - len(result)
         if removed > 0:
-            logger.info(f"初筛剔除: {removed} 只 (ST/高价/亏损/夕阳行业), 剩余 {len(result)} 只")
+            logger.info(f"粗筛剔除: {removed} 只, 剩余 {len(result)} 只")
         return result
+
+    def _ensure_board_data(self, board: str, trade_date: str):
+        if board == "BJ":
+            suffix = ".BJ"
+            board_name = "北交所"
+        elif board == "KCB":
+            suffix = ".SH"
+            prefix = "688"
+            board_name = "科创板"
+        else:
+            return
+
+        try:
+            if board == "BJ":
+                cnt = self.db.fetch_one(
+                    "SELECT COUNT(*) FROM stock_basic WHERE ts_code LIKE '%.BJ'"
+                )
+            else:
+                cnt = self.db.fetch_one(
+                    "SELECT COUNT(*) FROM stock_basic WHERE ts_code LIKE '688%.SH'"
+                )
+            if cnt and cnt[0] > 0:
+                return
+            logger.info(f"{board_name}stock_basic无数据，开始从网络同步...")
+            self._sync_board_stock_basic(board)
+        except Exception as e:
+            raise RuntimeError(f"{board_name}数据同步检查失败: {e}") from e
+
+    def _sync_board_stock_basic(self, board: str):
+        try:
+            import akshare as ak
+            if board == "BJ":
+                df = ak.stock_bj_a_spot_em()
+                if df.empty:
+                    logger.warning("akshare未返回北交所数据")
+                    return
+                code_col = "代码" if "代码" in df.columns else df.columns[0]
+                name_col = "名称" if "名称" in df.columns else df.columns[1]
+                rows = []
+                for _, r in df.iterrows():
+                    code = str(r[code_col]).zfill(6)
+                    rows.append({
+                        "ts_code": f"{code}.BJ",
+                        "symbol": code,
+                        "name": r[name_col],
+                        "market": "BJ",
+                    })
+            else:
+                df = ak.stock_kc_a_spot_em()
+                if df.empty:
+                    logger.warning("akshare未返回科创板数据")
+                    return
+                code_col = "代码" if "代码" in df.columns else df.columns[0]
+                name_col = "名称" if "名称" in df.columns else df.columns[1]
+                rows = []
+                for _, r in df.iterrows():
+                    code = str(r[code_col]).zfill(6)
+                    rows.append({
+                        "ts_code": f"{code}.SH",
+                        "symbol": code,
+                        "name": r[name_col],
+                        "market": "科创板",
+                    })
+
+            if not rows:
+                return
+            import pandas as pd_inner
+            basic_df = pd_inner.DataFrame(rows)
+            temp = f"temp_board_basic_{int(time.time()*1000)}"
+            self.db.conn.register(temp, basic_df)
+            cols = ", ".join(basic_df.columns)
+            self.db.execute(f"INSERT OR IGNORE INTO stock_basic ({cols}) SELECT {cols} FROM {temp}")
+            self.db.conn.unregister(temp)
+            logger.info(f"{board}stock_basic同步完成: {len(rows)} 只")
+        except Exception as e:
+            raise RuntimeError(f"{board}数据同步失败: {e}") from e
 
     def _to_date(self, trade_date: str) -> str:
         if len(trade_date) == 8:
             return f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
         return trade_date
+
+    def _merge_daily_basic(self, price_df: pd.DataFrame, end_date: str) -> pd.DataFrame:
+        dt = self._to_date(end_date)
+        try:
+            if not self.db.table_exists("daily_basic"):
+                return price_df
+            basic_cols = "ts_code,trade_date,pe_ttm,pb,ps_ttm,pcf_ttm,dv_ratio,turnover_rate,total_mv,circ_mv"
+            basic_df = self.db.fetch_df(
+                f"""SELECT {basic_cols} FROM daily_basic
+                WHERE trade_date <= ? AND trade_date >= CAST(? AS DATE) - INTERVAL 252 DAY
+                ORDER BY ts_code, trade_date""",
+                [dt, dt],
+            )
+            if basic_df.empty:
+                logger.debug("daily_basic无数据，跳过合并")
+                return price_df
+            new_cols = [c for c in basic_df.columns if c not in price_df.columns]
+            if not new_cols:
+                return price_df
+            basic_merge = basic_df.set_index(["ts_code", "trade_date"])[new_cols]
+            price_indexed = price_df.set_index(["ts_code", "trade_date"])
+            common_idx = price_indexed.index.intersection(basic_merge.index)
+            if len(common_idx) == 0:
+                return price_df
+            for col in new_cols:
+                price_indexed.loc[common_idx, col] = basic_merge.loc[common_idx, col].values
+            result = price_indexed.reset_index()
+            logger.debug(f"合并daily_basic: {len(common_idx)}行, 新增列{new_cols}")
+            return result
+        except Exception as e:
+            raise RuntimeError(f"合并daily_basic失败，估值因子将全为NaN: {e}") from e
 
     def _is_trade_day(self, date_str: str) -> bool:
         if date_str in self._trade_day_cache:
@@ -139,16 +350,16 @@ class Scheduler:
             if cnt and cnt[0] > 0:
                 self._trade_day_cache.add(date_str)
                 return True
-        except Exception:
-            logger.opt(exception=True).debug("交易日历查询异常，已跳过")
+        except Exception as e:
+            raise RuntimeError(f"交易日历查询失败: {e}") from e
         try:
             cal = self.collector.get_trade_calendar(date_str, date_str)
             is_td = len(cal) > 0
             if is_td:
                 self._trade_day_cache.add(date_str)
             return is_td
-        except Exception:
-            return True
+        except Exception as e:
+            raise RuntimeError(f"交易日历获取失败: {e}") from e
 
     def _has_factor_data(self, dt: str) -> bool:
         dt = self._to_date(dt)
@@ -157,9 +368,8 @@ class Scheduler:
                 "SELECT COUNT(*) FROM factors_daily WHERE trade_date = ?", [dt]
             )
             return cnt is not None and cnt[0] > 0
-        except Exception:
-            logger.opt(exception=True).debug("因子数据查询异常")
-            return False
+        except Exception as e:
+            raise RuntimeError(f"因子数据查询失败: {e}") from e
 
     def _has_decision_data(self, dt: str) -> bool:
         dt = self._to_date(dt)
@@ -168,9 +378,8 @@ class Scheduler:
                 "SELECT COUNT(*) FROM decisions WHERE trade_date = ?", [dt]
             )
             return cnt is not None and cnt[0] > 0
-        except Exception:
-            logger.opt(exception=True).debug("决策数据查询异常")
-            return False
+        except Exception as e:
+            raise RuntimeError(f"决策数据查询失败: {e}") from e
 
     def run_daily(self, trade_date: Optional[str] = None):
         if trade_date is None:
@@ -210,6 +419,7 @@ class Scheduler:
                 if full_price.empty:
                     logger.error(f"无历史数据: {trade_date}")
                     return
+                full_price = self._merge_daily_basic(full_price, dt)
                 stock_codes = full_price["ts_code"].unique()
                 industry = self._get_industry(stock_codes)
                 factor_df = self.factor_engine.pipeline(full_price, industry)
@@ -368,6 +578,7 @@ class Scheduler:
                         ) ORDER BY ts_code, trade_date"""
                         full_price = self.db.fetch_df(hist_sql)
                         if not full_price.empty:
+                            full_price = self._merge_daily_basic(full_price, dt)
                             if force:
                                 self.db.execute(f"DELETE FROM factors_daily WHERE trade_date = '{dt}'")
                             stock_codes = full_price["ts_code"].unique()
