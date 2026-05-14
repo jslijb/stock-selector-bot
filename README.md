@@ -64,7 +64,7 @@ python main.py -p1 20240101 20260430
 # 第二阶段：因子计算 + 选股决策 + 风控 + 进化（约2-3小时/2年）
 python main.py -p2 20240101 20260430
 
-# 补跑资金流向（可选，baostock 5分钟线估算，较慢）
+# 补跑资金流向（可选，baostock 5分钟线估算，可多线程加速）
 python main.py -mf 20240101 20260430
 ```
 
@@ -187,7 +187,7 @@ python main.py -c 20240101 20260430
 | 每日指标(PE/PB/市值) | baostock + 本地计算 | 免费，`-db` 命令执行 |
 | 行业分类 | Tushare `stock_basic` | 120积分，一次持久化到DB |
 | 交易日历 | baostock + daily_price推断 | 免费，按年同步持久化 |
-| 资金流向 | baostock 5分钟线估算 | 免费，近似度约85% |
+| 资金流向 | baostock 5分钟线估算 | 免费，多线程加速，近似度约85% |
 | 年报/季报 | Tushare `income_vip` | 120积分 |
 | LLM | 阿里百炼(DashScope) / MiniMax | 兼容 OpenAI 接口 |
 
@@ -282,6 +282,10 @@ evolution:
 scheduler:
   check_missing: true           # 因子计算时使用完整历史数据
   auto_backfill: true           # 自动补跑缺失数据
+
+moneyflow:
+  max_workers: 4                # 资金流向采集线程数
+  stock_interval: 1.0           # 每只股票间隔秒数(免费接口建议 1.0-3.0)
 ```
 
 ### `config/llm_config.yaml`（热加载）
@@ -317,7 +321,7 @@ src/
 │   ├── db.py              # DuckDB 连接管理(单例)
 │   ├── schema.py          # 12张核心表 + 12条Sequence + stock_basic自动迁移
 │   ├── collector.py       # Tushare采集 + baostock日历/资金流向
-│   ├── money_flow.py      # baostock 5分钟线资金流向估算(线程安全)
+│   ├── money_flow.py      # baostock 5分钟线资金流向估算(多线程+可配置并发参数)
 │   ├── daily_basic_local.py    # PE/PB/市值本地计算(baostock股本 + 财务数据)
 │   └── daily_basic_collector.py # baostock每日指标采集(北交所等)
 ├── factors/
@@ -425,6 +429,18 @@ python -s main.py -d 20260506
 ### Baostock 连接失败
 
 交易日历按年持久化，偶尔连接失败不影响运行。股本数据获取失败时会自动跳过并记录警告。
+
+### 资金流向采集过慢
+
+`-mf` 使用多线程采集，可在 `config/settings.yaml` 的 `moneyflow` 段调整：
+
+```yaml
+moneyflow:
+  max_workers: 2              # 降低线程数减少 baostock 压力
+  stock_interval: 2.0         # 增大间隔避免触发限频
+```
+
+默认参数（4线程 + 1.0秒/只）在 baostock 免费接口上约 90% 成功率。如失败率过高，建议降至 2线程 + 2.0秒/只。
 
 ### LLM 超时
 
