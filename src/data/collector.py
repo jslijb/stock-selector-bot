@@ -26,6 +26,15 @@ class TushareCollector:
         self._db_collector = DailyBasicCollector()
         self._failed_dates: list = []
 
+    def init_moneyflow(self, max_workers: int = 4, stock_interval: float = 1.0):
+        self._mf_estimator = MoneyFlowEstimator(max_workers, stock_interval)
+
+    def login_baostock(self):
+        self._mf_estimator.ensure_login()
+
+    def logout_baostock(self):
+        self._mf_estimator.logout()
+
     def _rate_limit(self):
         time.sleep(self._rate_delay)
 
@@ -158,13 +167,33 @@ class TushareCollector:
             dates = []
             while rs.error_code == "0" and rs.next():
                 row = rs.get_row_data()
-                dates.append(row[0].replace("-", ""))
+                if len(row) > 1 and row[1] == '1':
+                    dates.append(row[0].replace("-", ""))
             bs.logout()
             logger.info(f"交易日历: {start_date}~{end_date}, {len(dates)}个交易日")
             return dates
         except Exception:
             bs.logout()
             raise
+
+    def reset_trade_calendar(self, start_year: str, end_year: str):
+        logger.info(f"=== 重置交易日历 ({start_year}~{end_year}) ===")
+        for year in range(int(start_year), int(end_year) + 1):
+            y = str(year)
+            y_sd = f"{y}-01-01"
+            y_ed = f"{y}-12-31"
+            cnt = self.db.fetch_one(
+                "SELECT COUNT(*) FROM trade_calendar WHERE trade_date BETWEEN ? AND ?",
+                [y_sd, y_ed],
+            )
+            if cnt and cnt[0] > 0:
+                self.db.execute(
+                    "DELETE FROM trade_calendar WHERE trade_date BETWEEN ? AND ?",
+                    [y_sd, y_ed],
+                )
+                logger.info(f"已删除 {y} 年旧日历({cnt[0]}条)")
+        for year in range(int(start_year), int(end_year) + 1):
+            self._sync_year(str(year))
 
     def _workday_calendar(self, start_date: str, end_date: str) -> List[str]:
         start = datetime.strptime(start_date, "%Y%m%d")
@@ -300,10 +329,6 @@ class TushareCollector:
             return
         if self._has_daily_data(trade_date):
             logger.debug(f"数据已存在，跳过采集: {trade_date}")
-            try:
-                self.fetch_daily_basic(trade_date)
-            except Exception as e:
-                logger.opt(exception=True).warning(f"每日指标补采失败 {trade_date}: {e}")
             return
         logger.info(f"=== 采集日线数据: {trade_date} ===")
         price_df = None
@@ -320,10 +345,6 @@ class TushareCollector:
             self.fetch_adj_factor(trade_date)
         except Exception as e:
             logger.opt(exception=True).debug(f"复权因子采集跳过 {trade_date}: {e}")
-        try:
-            self.fetch_daily_basic(trade_date)
-        except Exception as e:
-            logger.opt(exception=True).warning(f"每日指标采集失败 {trade_date}: {e}")
         if not skip_money_flow:
             try:
                 self.fetch_money_flow(trade_date)
@@ -348,16 +369,28 @@ class TushareCollector:
         logger.info(f"补跑完成: {start_date} ~ {end_date}")
 
     def _upsert_df(self, df: pd.DataFrame, table_name: str):
+        date_val = None
+        if "trade_date" in df.columns:
+            dates = df["trade_date"].unique()
+            if len(dates) == 1:
+                d = dates[0]
+                date_val = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
         temp_view = f"temp_{table_name}_{int(time.time()*1000)}"
         self.db.conn.register(temp_view, df)
         cols = ", ".join(df.columns)
         try:
-            self.db.execute(f"INSERT OR IGNORE INTO {table_name} ({cols}) SELECT {cols} FROM {temp_view}")
+            if date_val:
+                self.db.locked_execute(
+                    table_name, date_val,
+                    f"INSERT OR IGNORE INTO {table_name} ({cols}) SELECT {cols} FROM {temp_view}",
+                )
+            else:
+                self.db.execute(f"INSERT OR IGNORE INTO {table_name} ({cols}) SELECT {cols} FROM {temp_view}")
         except Exception as e:
             logger.opt(exception=True).error(f"写入 {table_name} 失败: {e}")
             raise
         finally:
             try:
                 self.db.conn.unregister(temp_view)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.opt(exception=True).warning(f"临时视图 {temp_view} 注销失败(不影响数据): {e}")

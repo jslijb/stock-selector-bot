@@ -238,6 +238,6 @@ class FactorEvolver:
             self.db.execute(f"INSERT OR IGNORE INTO decision_performance ({insert_cols}) SELECT {insert_cols} FROM {temp}")
             try:
                 self.db.conn.unregister(temp)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.opt(exception=True).warning(f"临时视图 {temp} 注销失败(不影响数据): {e}")
             logger.info(f"批量绩效评估完成: {len(records)} 条")

@@ -264,8 +264,8 @@ class ReasoningEngine:
                     raise RuntimeError(f"LLM返回异常权重: {h}")
             logger.info(f"LLM选股完成: {len(result.get('holdings', []))} 只")
             return result
-        except (json.JSONDecodeError, RuntimeError) as e:
-            logger.error(f"LLM决策失败: {e}")
+        except Exception as e:
+            logger.opt(exception=True).error(f"LLM决策失败: {e}")
             raise
 
     def _format_candidates(self, candidates: pd.DataFrame, ml_scores: pd.Series,

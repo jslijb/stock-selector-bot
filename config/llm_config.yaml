@@ -1,32 +1,38 @@
 # ============================================================
-# 阿里百炼(DashScope) LLM 配置
-# 修改后自动生效，无需重启应用
-# API文档: https://help.aliyun.com/zh/model-studio/
+# LLM 配置（热加载 - 修改后5秒内自动生效，无需重启）
+# 支持所有兼容 OpenAI 接口的服务商
 # ============================================================
 
-# API Key (也可通过环境变量 DASHSCOPE_API_KEY 设置)
+# API Key 配置方式（三选一，优先级从高到低）：
+# 1. 此处直接填写: api_key: "sk-xxx"
+# 2. 环境变量引用: api_key_env 指定变量名，api_key留空
+# 3. 默认: 读取 DASHSCOPE_API_KEY 环境变量
 api_key: ""
+api_key_env: "DASHSCOPE_API_KEY"
 
-# 兼容OpenAI的Base URL
+# 兼容 OpenAI 的 Base URL（可按需切换服务商）
+# 阿里百炼: https://dashscope.aliyuncs.com/compatible-mode/v1
+# MiniMax:  https://api.minimax.chat/v1
+# DeepSeek: https://api.deepseek.com/v1
 base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # ============================================================
-# 选股决策模型 (第三层LLM认知推理)
-# 推荐模型:
-#   - qwen-plus        : 综合能力强，性价比高 (推荐)
-#   - qwen-turbo       : 速度快，成本低
-#   - qwen-max         : 最强推理能力
-#   - qwen-long        : 超长上下文
-#   - deepseek-v3      : DeepSeek V3
-#   - deepseek-r1      : DeepSeek R1 推理
+# 选股决策模型（第三层LLM认知推理）
+# 推荐模型（按能力排序）：
+#   qwen-plus        : 综合能力强，性价比高 ★推荐
+#   qwen-max         : 最强推理能力
+#   qwen-turbo       : 速度快，成本低
+#   deepseek-v3      : DeepSeek V3
+#   deepseek-r1      : DeepSeek R1 推理增强
+#   MiniMax-M2.5     : MiniMax M2.5
 # ============================================================
 decision_model: "MiniMax-M2.5"
 decision_max_tokens: 4096
 decision_temperature: 0.3
 
 # ============================================================
-# 舆情分析模型 (NLP情感打标)
-# 舆情分析任务简单，可用轻量模型节省成本
+# 舆情分析模型（NLP情感打标）
+# 舆情分析任务简单，推荐轻量模型节省成本
 # ============================================================
 sentiment_model: "MiniMax-M2.5"
 sentiment_max_tokens: 1024

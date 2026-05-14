@@ -41,10 +41,46 @@ risk:
   min_avg_amount: 5000.0
   min_revenue: 5.0
   max_pe_noncyclical: 50.0
+  exclude_st: true
   enable_bj: false
   enable_kcb: false
   bj_min_market_cap: 10.0
   kcb_min_market_cap: 15.0
+
+  # 行业黑名单（含这些关键词的行业全部剔除）
+  excluded_industries:
+    - 房地产
+    - 纺织制造
+    - 服装
+    - 影视
+    - 院线
+
+  # 周期性行业（需满足负债上限）
+  cyclical_industries:
+    - 煤炭
+    - 石油石化
+    - 有色金属
+    - 贵金属
+    - 小金属
+    - 钢铁
+    - 基础化工
+    - 建筑材料
+    - 水泥
+    - 玻璃玻纤
+    - 工程机械
+    - 通用设备
+    - 轨交设备
+    - 电网设备
+    - 锂电
+    - 汽车
+    - 乘用车
+    - 家电
+    - 航运
+    - 航空
+    - 船舶制造
+    - 证券
+    - 保险
+  cyclical_max_debt_ratio: 70.0
 
 evolution:
   frequency: "monthly"
@@ -54,3 +90,7 @@ evolution:
 scheduler:
   check_missing: true
   auto_backfill: true
+
+moneyflow:
+  max_workers: 4
+  stock_interval: 1.0

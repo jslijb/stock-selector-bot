@@ -98,6 +98,8 @@ class AppConfig:
     evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
     check_missing: bool = True
     auto_backfill: bool = True
+    mf_max_workers: int = 4
+    mf_stock_interval: float = 1.0
 
 
 def _get_llm_config_path() -> Path:
@@ -114,7 +116,7 @@ def _load_llm_config_yaml() -> dict:
 
 def _apply_llm_config(cfg: AppConfig, llm_raw: dict) -> None:
     api_key = llm_raw.get("api_key", "")
-    api_key_env = "DASHSCOPE_API_KEY"
+    api_key_env = llm_raw.get("api_key_env", "DASHSCOPE_API_KEY")
     if not api_key:
         api_key = os.environ.get(api_key_env, "")
 
@@ -245,10 +247,14 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             min_avg_amount=risk_raw.get("min_avg_amount", cfg.risk.min_avg_amount),
             min_revenue=risk_raw.get("min_revenue", cfg.risk.min_revenue),
             max_pe_noncyclical=risk_raw.get("max_pe_noncyclical", cfg.risk.max_pe_noncyclical),
+            exclude_st=risk_raw.get("exclude_st", cfg.risk.exclude_st),
             enable_bj=risk_raw.get("enable_bj", cfg.risk.enable_bj),
             enable_kcb=risk_raw.get("enable_kcb", cfg.risk.enable_kcb),
             bj_min_market_cap=risk_raw.get("bj_min_market_cap", cfg.risk.bj_min_market_cap),
             kcb_min_market_cap=risk_raw.get("kcb_min_market_cap", cfg.risk.kcb_min_market_cap),
+            excluded_industries=tuple(risk_raw.get("excluded_industries", list(cfg.risk.excluded_industries))),
+            cyclical_industries=tuple(risk_raw.get("cyclical_industries", list(cfg.risk.cyclical_industries))),
+            cyclical_max_debt_ratio=risk_raw.get("cyclical_max_debt_ratio", cfg.risk.cyclical_max_debt_ratio),
         )
 
         evo_raw = raw.get("evolution", {})

@@ -182,7 +182,8 @@ class Scheduler:
                         non_cyclical_loss.add(code)
                 else:
                     try:
-                        debt_ratio = row.get("total_liab", 0) / row.get("total_assets", 1) * 100
+                        assets = row.get("total_assets", 0) or 1
+                        debt_ratio = row.get("total_liab", 0) / assets * 100
                         if debt_ratio > self.cfg.risk.cyclical_max_debt_ratio:
                             cyclical_fail.add(code)
                     except Exception:
@@ -233,7 +234,6 @@ class Scheduler:
             board_name = "北交所"
         elif board == "KCB":
             suffix = ".SH"
-            prefix = "688"
             board_name = "科创板"
         else:
             return
@@ -451,7 +451,11 @@ class Scheduler:
             logger.error("初筛后无股票，跳过推理")
             return
         market_env = self._get_market_env(trade_date)
-        decision = self.reasoning.run_full_pipeline(trade_date, factor_pivot, market_env)
+        try:
+            decision = self.reasoning.run_full_pipeline(trade_date, factor_pivot, market_env)
+        except Exception as e:
+            logger.opt(exception=True).error(f"推理引擎失败 {trade_date}: {e}")
+            return None
 
         logger.info("[6/7] 风控校验")
         result = self.risk.validate_and_adjust(decision.get("holdings", []))
@@ -490,7 +494,7 @@ class Scheduler:
                 self.evolver.approve_weights(self._to_date(trade_date))
                 logger.info(f"因子权重已自动进化并生效: {len(weights)} 个因子")
         except Exception as e:
-            logger.opt(exception=True).debug(f"自动进化跳过: {e}")
+            raise RuntimeError(f"自动进化失败，因子权重无法更新: {e}") from e
 
     def run_backfill(self, start_date: str, end_date: str):
         logger.info(f"补跑模式: {start_date} ~ {end_date}")
@@ -536,21 +540,60 @@ class Scheduler:
         trade_dates = self.collector.get_trade_calendar(start_date, end_date)
         self._trade_day_cache.update(trade_dates)
         logger.info(f"交易日 {len(trade_dates)} 天")
+        self.collector.init_moneyflow(self.cfg.mf_max_workers, self.cfg.mf_stock_interval)
+        self.collector.login_baostock()
+        try:
+            for i, td in enumerate(trade_dates, 1):
+                try:
+                    dt = self._to_date(td)
+                    cnt = self.db.fetch_one(
+                        "SELECT COUNT(*) FROM money_flow WHERE trade_date = ?", [dt]
+                    )
+                    if cnt and cnt[0] > 0:
+                        logger.debug(f"资金流向已存在，跳过: {td}")
+                        continue
+                    logger.info(f"[{i}/{len(trade_dates)}] 资金流向: {td}")
+                    self.collector.fetch_money_flow(td)
+                except Exception as e:
+                    import traceback
+                    logger.error(f"资金流向 {td} 失败: {e}\n{traceback.format_exc()}")
+        finally:
+            self.collector.logout_baostock()
+        logger.info("资金流向补跑完成")
+
+    def run_backfill_daily_basic(self, start_date: str, end_date: str):
+        from .data.daily_basic_local import DailyBasicLocalCalculator
+        calculator = DailyBasicLocalCalculator(self.db)
+
+        logger.info("=== 第0步: 缓存股本数据 ===")
+        calculator.ensure_share_cache()
+
+        trade_dates = self.collector.get_trade_calendar(start_date, end_date)
+        self._trade_day_cache.update(trade_dates)
+        today_str = datetime.now().strftime("%Y%m%d")
+        logger.info(f"=== 补跑每日指标 ({start_date} ~ {end_date}), {len(trade_dates)} 天 ===")
+
         for i, td in enumerate(trade_dates, 1):
             try:
                 dt = self._to_date(td)
                 cnt = self.db.fetch_one(
-                    "SELECT COUNT(*) FROM money_flow WHERE trade_date = ?", [dt]
+                    "SELECT COUNT(*) FROM daily_basic WHERE trade_date = ?", [dt]
                 )
                 if cnt and cnt[0] > 0:
-                    logger.debug(f"资金流向已存在，跳过: {td}")
                     continue
-                logger.info(f"[{i}/{len(trade_dates)}] 资金流向: {td}")
-                self.collector.fetch_money_flow(td)
+                logger.info(f"[{i}/{len(trade_dates)}] 每日指标: {td}")
+
+                if td == today_str:
+                    df = calculator.fetch_today_via_eastmoney(td)
+                else:
+                    df = calculator.compute_daily_basic(td)
+
+                if not df.empty:
+                    calculator.upsert_daily_basic(df)
             except Exception as e:
                 import traceback
-                logger.error(f"资金流向 {td} 失败: {e}\n{traceback.format_exc()}")
-        logger.info("资金流向补跑完成")
+                logger.error(f"每日指标 {td} 失败: {e}\n{traceback.format_exc()}")
+        logger.info("每日指标补跑完成")
 
     def run_backfill_phase2(self, start_date: str, end_date: str, force: bool = False):
         logger.info(f"=== 第二阶段: 因子计算 + 选股 ({start_date} ~ {end_date}) ===")
@@ -580,7 +623,7 @@ class Scheduler:
                         if not full_price.empty:
                             full_price = self._merge_daily_basic(full_price, dt)
                             if force:
-                                self.db.execute(f"DELETE FROM factors_daily WHERE trade_date = '{dt}'")
+                                self.db.locked_execute("factors_daily", dt, f"DELETE FROM factors_daily WHERE trade_date = '{dt}'")
                             stock_codes = full_price["ts_code"].unique()
                             industry = self._get_industry(stock_codes)
                             factor_df = self.factor_engine.pipeline(full_price, industry)
@@ -590,7 +633,7 @@ class Scheduler:
                     logger.debug(f"决策已存在，跳过: {td}")
                     continue
                 if force:
-                    self.db.execute(f"DELETE FROM decisions WHERE trade_date = '{dt}'")
+                    self.db.locked_execute("decisions", dt, f"DELETE FROM decisions WHERE trade_date = '{dt}'")
                 factor_wide = self.db.fetch_df(
                     "SELECT ts_code, factor_name, factor_value FROM factors_daily WHERE trade_date = ?",
                     [dt],

@@ -16,10 +16,12 @@ console = Console()
 @click.option("--phase1", "-p1", nargs=2, type=str, default=None, help="第一阶段: 仅采集日线+复权数据(快)")
 @click.option("--phase2", "-p2", nargs=2, type=str, default=None, help="第二阶段: 因子计算+选股+风控+进化")
 @click.option("--moneyflow", "-mf", nargs=2, type=str, default=None, help="补跑资金流向: -mf 起始日期 结束日期")
+@click.option("--dailybasic", "-db", nargs=2, type=str, default=None, help="补跑每日指标(PE/PB/市值): -db 起始日期 结束日期")
 @click.option("--check", "-c", nargs=2, type=str, default=None, help="检查缺失: -c 起始日期 结束日期")
 @click.option("--force", "-f", is_flag=True, default=False, help="强制重跑(不跳过已有数据)")
 @click.option("--time", "-t", default=None, help="定时模式，指定每日运行时间如 15:30")
-def main(date, backfill, phase1, phase2, moneyflow, check, force, time):
+@click.option("--reset-calendar", nargs=2, type=str, default=None, help="重置交易日历: --reset-calendar 起始年份 结束年份")
+def main(date, backfill, phase1, phase2, moneyflow, dailybasic, check, force, time, reset_calendar):
     """认知型智能选股 Agent - 运行即输出选股结果"""
     from src.scheduler import Scheduler
     from src.config import start_hot_reload, get_config
@@ -46,6 +48,20 @@ def main(date, backfill, phase1, phase2, moneyflow, check, force, time):
         console.print(f"[bold yellow]补跑资金流向: {moneyflow[0]} ~ {moneyflow[1]}[/bold yellow]")
         scheduler.run_backfill_moneyflow(moneyflow[0], moneyflow[1])
         console.print("[bold green]资金流向补跑完成[/bold green]")
+        return
+
+    if dailybasic:
+        scheduler = Scheduler()
+        console.print(f"[bold yellow]补跑每日指标(PE/PB/市值): {dailybasic[0]} ~ {dailybasic[1]}[/bold yellow]")
+        scheduler.run_backfill_daily_basic(dailybasic[0], dailybasic[1])
+        console.print("[bold green]每日指标补跑完成[/bold green]")
+        return
+
+    if reset_calendar:
+        scheduler = Scheduler()
+        console.print(f"[bold cyan]重置交易日历: {reset_calendar[0]}~{reset_calendar[1]}年[/bold cyan]")
+        scheduler.collector.reset_trade_calendar(reset_calendar[0], reset_calendar[1])
+        console.print("[bold green]交易日历重置完成[/bold green]")
         return
 
     if check:

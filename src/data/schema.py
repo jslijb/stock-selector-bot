@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS stock_basic (
     industry    VARCHAR,
     market      VARCHAR,
     list_date   DATE,
+    total_share DOUBLE,
+    circ_share  DOUBLE,
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """,
@@ -204,7 +206,25 @@ def init_schema(db) -> None:
         db.execute(ddl)
         logger.info(f"Created table: {table_name}")
 
+    _migrate_stock_basic(db)
+
     logger.info("Schema initialization complete")
+
+
+def _migrate_stock_basic(db) -> None:
+    if not db.table_exists("stock_basic"):
+        return
+    try:
+        cols = db.fetch_df("SELECT column_name FROM information_schema.columns WHERE table_name = 'stock_basic'")
+        existing = set(cols["column_name"].tolist()) if not cols.empty else set()
+        if "total_share" not in existing:
+            db.execute("ALTER TABLE stock_basic ADD COLUMN total_share DOUBLE")
+            logger.info("stock_basic: 添加 total_share 列")
+        if "circ_share" not in existing:
+            db.execute("ALTER TABLE stock_basic ADD COLUMN circ_share DOUBLE")
+            logger.info("stock_basic: 添加 circ_share 列")
+    except Exception as e:
+        logger.opt(exception=True).warning(f"stock_basic迁移跳过: {e}")
 
 
 TABLE_NAMES = list(SCHEMA_SQL.keys())

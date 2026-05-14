@@ -28,6 +28,11 @@ class Database:
     def execute(self, sql: str, params=None):
         return self.conn.execute(sql, params) if params is None else self.conn.execute(sql, params)
 
+    def locked_execute(self, table: str, date: str, sql: str, params=None):
+        from .lock_manager import DateLockManager
+        with DateLockManager.lock(table, date):
+            return self.execute(sql, params)
+
     def fetch_df(self, sql: str, params=None):
         result = self.execute(sql, params)
         return result.df()
