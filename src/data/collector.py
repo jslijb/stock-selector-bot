@@ -247,17 +247,26 @@ class TushareCollector:
     def fetch_money_flow(self, trade_date: str) -> pd.DataFrame:
         logger.info(f"baostock分钟线估算资金流向: {trade_date}")
         stock_list = None
+        suspended = None
         try:
+            date_param = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
             price_df = self.db.fetch_df(
                 "SELECT DISTINCT ts_code FROM daily_price WHERE trade_date = ?",
-                [f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"],
+                [date_param],
             )
             if not price_df.empty:
                 stock_list = price_df["ts_code"].tolist()
+
+            susp_df = self.db.fetch_df(
+                "SELECT ts_code FROM daily_price WHERE trade_date = ? AND vol = 0",
+                [date_param],
+            )
+            if not susp_df.empty:
+                suspended = set(susp_df["ts_code"].tolist())
         except Exception:
             logger.opt(exception=True).debug("获取资金流股票列表异常")
 
-        df = self._mf_estimator.estimate_flow_for_date(trade_date, stock_list)
+        df = self._mf_estimator.estimate_flow_for_date(trade_date, stock_list, suspended)
         if not df.empty:
             self._upsert_df(df, "money_flow")
             logger.info(f"money_flow {trade_date}: {len(df)} 条")
