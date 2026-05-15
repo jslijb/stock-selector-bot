@@ -22,6 +22,8 @@ _LG_THRESHOLD = 100.0
 class MoneyFlowEstimator:
     _bs_lock = threading.Lock()
     _logged_in = False
+    _consecutive_failures = 0
+    _MAX_CONSECUTIVE_FAILURES = 10
 
     def __init__(self, max_workers: int = 4, stock_interval: float = 1.0):
         self.max_workers = max_workers
@@ -37,6 +39,7 @@ class MoneyFlowEstimator:
                     logger.warning(f"baostock登录失败: {lg.error_msg}")
                 else:
                     self._logged_in = True
+                    self._consecutive_failures = 0
                     logger.debug("baostock登录成功")
 
     def logout(self):
@@ -47,6 +50,22 @@ class MoneyFlowEstimator:
                 except Exception as e:
                     logger.debug(f"baostock登出异常: {e}")
                 self._logged_in = False
+                self._consecutive_failures = 0
+
+    def _reconnect(self):
+        with self._bs_lock:
+            try:
+                bs.logout()
+            except Exception:
+                pass
+            lg = bs.login()
+            if lg.error_code == "0":
+                self._logged_in = True
+                self._consecutive_failures = 0
+                logger.info("baostock 重连成功")
+            else:
+                self._logged_in = False
+                logger.warning(f"baostock 重连失败: {lg.error_msg}")
 
     def _bs_query(self, baocode: str, date_str: str) -> Optional[list]:
         with self._bs_lock:
@@ -58,7 +77,13 @@ class MoneyFlowEstimator:
                 frequency="5", adjustflag="3",
             )
             if rs.error_code != "0":
+                self._consecutive_failures += 1
+                logger.debug(
+                    f"baostock查询失败 {baocode}: "
+                    f"error_code={rs.error_code}, msg={rs.error_msg}"
+                )
                 return None
+            self._consecutive_failures = 0
             bars = []
             while rs.next():
                 row = rs.get_row_data()
@@ -83,7 +108,8 @@ class MoneyFlowEstimator:
         ts_market = "SH" if market == "sh" else "SZ"
         return f"{code}.{ts_market}"
 
-    def estimate_flow_for_date(self, trade_date: str, stock_list: list = None) -> pd.DataFrame:
+    def estimate_flow_for_date(self, trade_date: str, stock_list: list = None,
+                               suspended: set = None) -> pd.DataFrame:
         if not _BS_AVAILABLE:
             logger.warning("baostock不可用，无法估算资金流向")
             return pd.DataFrame()
@@ -92,6 +118,17 @@ class MoneyFlowEstimator:
 
         if stock_list is None:
             stock_list = self._get_all_stocks()
+
+        if not stock_list:
+            return pd.DataFrame()
+
+        if suspended:
+            before = len(stock_list)
+            stock_list = [s for s in stock_list if s not in suspended]
+            logger.info(
+                f"跳过停牌股 {before - len(stock_list)} 只, "
+                f"实际查询 {len(stock_list)} 只"
+            )
 
         if not stock_list:
             return pd.DataFrame()
@@ -113,12 +150,39 @@ class MoneyFlowEstimator:
                         row = self._classify_bars(ts_code, bars)
                         if row:
                             local_results.append(row)
-                            continue
-                    local_failed.append(ts_code)
+                        else:
+                            local_failed.append(ts_code)
+                    else:
+                        local_failed.append(ts_code)
+                        if self._consecutive_failures >= self._MAX_CONSECUTIVE_FAILURES:
+                            logger.warning(
+                                f"baostock 连续 {self._consecutive_failures} 次失败, 尝试重连"
+                            )
+                            self._reconnect()
                 except Exception as e:
                     local_failed.append(ts_code)
                     logger.opt(exception=True).debug(f"资金流向 {ts_code} 异常: {e}")
                 time.sleep(self.stock_interval)
+
+            if local_failed and self._logged_in:
+                retried = []
+                still_failed = []
+                for ts_code in local_failed:
+                    try:
+                        bars = self._bs_query(self._ts_to_baocode(ts_code), date_str)
+                        if bars:
+                            row = self._classify_bars(ts_code, bars)
+                            if row:
+                                retried.append(row)
+                                continue
+                        still_failed.append(ts_code)
+                    except Exception:
+                        still_failed.append(ts_code)
+                    time.sleep(self.stock_interval)
+                if retried:
+                    logger.info(f"重连后重试成功 {len(retried)} 只")
+                local_failed = still_failed
+
             if local_failed:
                 with failed_lock:
                     failed_stocks.extend(local_failed)
