@@ -1,8 +1,10 @@
 import os
 import time
+import yaml
 import tushare as ts
 import pandas as pd
 from loguru import logger
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from ..config import get_config
@@ -10,6 +12,13 @@ from .db import Database
 from .schema import init_schema
 from .money_flow import MoneyFlowEstimator
 from .daily_basic_collector import DailyBasicCollector
+
+_BS_SUPPORTED_PREFIXES = frozenset({
+    "000", "001", "002", "003",
+    "300", "301",
+    "600", "601", "603", "605",
+    "688",
+})
 
 
 class TushareCollector:
@@ -25,6 +34,8 @@ class TushareCollector:
         self._mf_estimator = MoneyFlowEstimator()
         self._db_collector = DailyBasicCollector()
         self._failed_dates: list = []
+        self._mf_filter_cfg = None
+        self._mf_financial_excludes = None
 
     def init_moneyflow(self, max_workers: int = 4, stock_interval: float = 1.0):
         self._mf_estimator = MoneyFlowEstimator(max_workers, stock_interval)
@@ -244,6 +255,333 @@ class TushareCollector:
             logger.info(f"financials {period}: {len(df)} 条")
         return df
 
+    def _load_moneyflow_filter(self) -> dict:
+        if self._mf_filter_cfg is not None:
+            return self._mf_filter_cfg
+        config_path = Path("config/moneyflow_filter.yaml")
+        if not config_path.exists():
+            self._mf_filter_cfg = {}
+            return {}
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                self._mf_filter_cfg = yaml.safe_load(f) or {}
+            logger.info(f"资金流向过滤配置已加载: {config_path}")
+        except Exception as e:
+            logger.warning(f"加载资金流向过滤配置失败: {e}")
+            self._mf_filter_cfg = {}
+        return self._mf_filter_cfg
+
+    def _save_stock_basic_names(self, name_df: pd.DataFrame) -> None:
+        if name_df.empty:
+            return
+        try:
+            name_map = dict(zip(name_df["ts_code"], name_df["name"]))
+            for ts_code, name in name_map.items():
+                self.db.execute(
+                    "UPDATE stock_basic SET name = ? WHERE ts_code = ?",
+                    [name, ts_code],
+                )
+            logger.debug(f"stock_basic name列已更新: {len(name_map)} 只")
+        except Exception as e:
+            logger.opt(exception=True).debug(f"stock_basic name更新失败: {e}")
+
+    def _filter_stocks_for_moneyflow(self, stock_list: list, trade_date: str) -> list:
+        cfg = self._load_moneyflow_filter()
+        if not cfg:
+            return stock_list
+
+        remaining = set(stock_list)
+        date_param = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}"
+
+        before = len(remaining)
+        remaining = {s for s in remaining if s[:3] in _BS_SUPPORTED_PREFIXES}
+        if len(remaining) < before:
+            logger.debug(f"过滤Baostock不支持: {before - len(remaining)} 只")
+
+        if cfg.get("exclude_st", True):
+            try:
+                name_cnt = self.db.fetch_one("SELECT COUNT(*) FROM stock_basic WHERE name IS NOT NULL AND name != ''")
+                if name_cnt is None or name_cnt[0] == 0:
+                    try:
+                        name_result = self.pro.stock_basic(
+                            exchange='', list_status='L', fields='ts_code,name',
+                        )
+                        self._rate_limit()
+                        if not name_result.empty:
+                            self._save_stock_basic_names(name_result)
+                            logger.info(f"已补充stock_basic name列: {len(name_result)} 只")
+                    except Exception:
+                        logger.opt(exception=True).debug("Tushare name数据补充异常")
+
+                st_df = self.db.fetch_df("SELECT ts_code FROM stock_basic WHERE name LIKE '%ST%'")
+                before = len(remaining)
+                if not st_df.empty:
+                    remaining -= set(st_df["ts_code"].tolist())
+                logger.debug(f"过滤ST: {before - len(remaining)} 只")
+            except Exception:
+                logger.opt(exception=True).debug("ST过滤异常")
+
+        max_price = cfg.get("max_price", 100.0)
+        try:
+            high_df = self.db.fetch_df(
+                "SELECT ts_code FROM daily_price WHERE trade_date = ? AND close > ?",
+                [date_param, max_price],
+            )
+            if not high_df.empty:
+                before = len(remaining)
+                remaining -= set(high_df["ts_code"].tolist())
+                logger.debug(f"过滤高价股(>{max_price}): {before - len(remaining)} 只")
+        except Exception:
+            logger.opt(exception=True).debug("高价股过滤异常")
+
+        if cfg.get("exclude_cyb", True):
+            before = len(remaining)
+            remaining = {s for s in remaining if not s.startswith("300")}
+            logger.debug(f"过滤创业板: {before - len(remaining)} 只")
+
+        if cfg.get("exclude_bj", True):
+            before = len(remaining)
+            remaining = {s for s in remaining if not s.startswith("8")}
+            logger.debug(f"过滤北交所: {before - len(remaining)} 只")
+
+        excluded = cfg.get("excluded_industries", [])
+        if excluded:
+            try:
+                placeholders = ",".join(["?"] * len(excluded))
+                ind_df = self.db.fetch_df(
+                    f"SELECT ts_code FROM stock_basic WHERE industry IN ({placeholders})",
+                    excluded,
+                )
+                if not ind_df.empty:
+                    before = len(remaining)
+                    remaining -= set(ind_df["ts_code"].tolist())
+                    logger.debug(f"过滤黑名单行业: {before - len(remaining)} 只")
+            except Exception:
+                logger.opt(exception=True).debug("行业过滤异常")
+
+        min_cap = cfg.get("min_market_cap", 100.0)
+        try:
+            cap_thresh = min_cap * 10000.0
+            cap_df = self.db.fetch_df(
+                "SELECT ts_code FROM daily_basic WHERE trade_date = ? AND total_mv < ?",
+                [date_param, cap_thresh],
+            )
+            if not cap_df.empty:
+                before = len(remaining)
+                remaining -= set(cap_df["ts_code"].tolist())
+                logger.debug(f"过滤小市值(<{min_cap}亿): {before - len(remaining)} 只")
+        except Exception:
+            logger.opt(exception=True).debug("市值过滤异常")
+
+        if self._mf_financial_excludes is None:
+            self._mf_financial_excludes = self._compute_financial_excludes(remaining, cfg)
+        remaining -= self._mf_financial_excludes
+
+        logger.info(
+            f"资金流向过滤: {len(stock_list)} → {len(remaining)} 只 "
+            f"(排除 {len(stock_list) - len(remaining)})"
+        )
+        return list(remaining)
+
+    def _compute_financial_excludes(self, ts_codes: set, cfg: dict) -> set:
+        if not ts_codes:
+            return set()
+
+        self._ensure_financials_for_filter(ts_codes)
+
+        cyclical = set(cfg.get("cyclical_industries", []))
+        try:
+            ind_df = self.db.fetch_df("SELECT ts_code, industry FROM stock_basic")
+            industry_map = dict(zip(ind_df["ts_code"], ind_df["industry"])) if not ind_df.empty else {}
+        except Exception:
+            industry_map = {}
+
+        codes_str = ",".join([f"'{c}'" for c in ts_codes])
+        try:
+            fin_df = self.db.fetch_df(
+                f"SELECT ts_code, report_period, net_profit, total_revenue "
+                f"FROM financials WHERE ts_code IN ({codes_str})"
+            )
+        except Exception:
+            logger.opt(exception=True).warning("财报数据查询失败，跳过财务过滤")
+            return set()
+
+        if fin_df.empty:
+            logger.info("财报数据为空，跳过财务过滤")
+            return set()
+
+        now = datetime.now()
+        current_year = now.year
+        current_month = now.month
+
+        if current_month <= 4:
+            latest_q = (current_year - 1, 4)
+        elif current_month <= 7:
+            latest_q = (current_year, 1)
+        elif current_month <= 10:
+            latest_q = (current_year, 2)
+        else:
+            latest_q = (current_year, 3)
+        prev_q = (latest_q[0] - 1, latest_q[1])
+
+        q_end = {1: "0331", 2: "0630", 3: "0930", 4: "1231"}
+        latest_period = f"{latest_q[0]}{q_end[latest_q[1]]}"
+        prev_period = f"{prev_q[0]}{q_end[prev_q[1]]}"
+
+        loss_years_non = cfg.get("loss_years_noncyclical", 2)
+        loss_years_cyc = cfg.get("loss_years_cyclical", 5)
+        revenue_years = cfg.get("revenue_years", 2)
+        min_avg_revenue = cfg.get("min_avg_revenue", 30.0) * 1e8
+
+        excludes = set()
+        for ts_code in ts_codes:
+            stock_fin = fin_df[fin_df["ts_code"] == ts_code]
+            if stock_fin.empty:
+                continue
+
+            latest_np_row = stock_fin[stock_fin["report_period"] == latest_period]
+            prev_np_row = stock_fin[stock_fin["report_period"] == prev_period]
+
+            if not latest_np_row.empty and not prev_np_row.empty:
+                latest_np = latest_np_row["net_profit"].iloc[0]
+                prev_np = prev_np_row["net_profit"].iloc[0]
+                if pd.notna(latest_np) and pd.notna(prev_np) and latest_np > 0:
+                    if prev_np <= 0:
+                        continue
+                    growth = (latest_np - prev_np) / abs(prev_np)
+                    if growth >= 0.1:
+                        continue
+
+            industry = industry_map.get(ts_code, "")
+            is_cyclical = industry in cyclical
+            n_years = loss_years_cyc if is_cyclical else loss_years_non
+
+            annual = stock_fin[stock_fin["report_period"].str.endswith("1231")]
+            annual = annual.sort_values("report_period", ascending=False).head(n_years)
+            if len(annual) >= n_years and (annual["net_profit"] < 0).all():
+                excludes.add(ts_code)
+                continue
+
+            rev_annual = annual.head(revenue_years)
+            if len(rev_annual) >= revenue_years:
+                avg_rev = rev_annual["total_revenue"].mean()
+                if pd.notna(avg_rev) and avg_rev < min_avg_revenue:
+                    excludes.add(ts_code)
+
+        if excludes:
+            logger.info(f"财务过滤排除 {len(excludes)} 只(连续亏损/低营收)")
+        else:
+            logger.debug("财务过滤: 无排除")
+        return excludes
+
+    def _ensure_financials_for_filter(self, ts_codes: set) -> None:
+        if not ts_codes:
+            return
+        if not self._mf_estimator._logged_in:
+            logger.warning("baostock未登录，跳过财报数据补充")
+            return
+
+        cfg = self._load_moneyflow_filter()
+        cyclical = set(cfg.get("cyclical_industries", []))
+        try:
+            ind_df = self.db.fetch_df("SELECT ts_code, industry FROM stock_basic")
+            industry_map = dict(zip(ind_df["ts_code"], ind_df["industry"])) if not ind_df.empty else {}
+        except Exception:
+            industry_map = {}
+
+        now = datetime.now()
+        current_year = now.year
+        current_month = now.month
+        if current_month <= 4:
+            latest_q = (current_year - 1, 4)
+        elif current_month <= 7:
+            latest_q = (current_year, 1)
+        elif current_month <= 10:
+            latest_q = (current_year, 2)
+        else:
+            latest_q = (current_year, 3)
+        prev_q = (latest_q[0] - 1, latest_q[1])
+
+        q_end = {1: "0331", 2: "0630", 3: "0930", 4: "1231"}
+        quarterly_periods = [
+            f"{latest_q[0]}{q_end[latest_q[1]]}",
+            f"{prev_q[0]}{q_end[prev_q[1]]}",
+        ]
+
+        loss_years_non = cfg.get("loss_years_noncyclical", 2)
+        loss_years_cyc = cfg.get("loss_years_cyclical", 5)
+        revenue_years = cfg.get("revenue_years", 2)
+
+        required = {}
+        for ts_code in ts_codes:
+            industry = industry_map.get(ts_code, "")
+            n = loss_years_cyc if industry in cyclical else loss_years_non
+            n = max(n, revenue_years)
+            periods = [f"{y}1231" for y in range(current_year - n, current_year)]
+            periods.extend(quarterly_periods)
+            required[ts_code] = periods
+
+        codes_str = ",".join([f"'{c}'" for c in ts_codes])
+        try:
+            existing_df = self.db.fetch_df(
+                f"SELECT DISTINCT ts_code, report_period FROM financials "
+                f"WHERE ts_code IN ({codes_str})"
+            )
+            existing = set(zip(existing_df["ts_code"], existing_df["report_period"])) if not existing_df.empty else set()
+        except Exception:
+            existing = set()
+
+        missing = []
+        for ts_code, periods in required.items():
+            for period in periods:
+                if (ts_code, period) not in existing:
+                    missing.append((ts_code, period))
+
+        if not missing:
+            logger.info("财报数据完整，无需补充")
+            return
+
+        logger.info(f"需补充财报数据: {len(missing)} 条, 预计耗时 {len(missing) * 0.15:.0f} 秒")
+
+        new_rows = []
+        fetched = 0
+        for ts_code, period in missing:
+            year = int(period[:4])
+            month = int(period[4:6])
+            if month <= 3:
+                quarter = 1
+            elif month <= 6:
+                quarter = 2
+            elif month <= 9:
+                quarter = 3
+            else:
+                quarter = 4
+
+            baocode = MoneyFlowEstimator._ts_to_baocode(ts_code)
+            data = self._mf_estimator.query_profit_data(baocode, year, quarter)
+            if data:
+                try:
+                    net_profit = float(data.get("netProfit", 0))
+                    total_revenue = float(data.get("totalOperRev", 0))
+                    new_rows.append({
+                        "ts_code": ts_code,
+                        "report_period": period,
+                        "net_profit": net_profit,
+                        "total_revenue": total_revenue,
+                    })
+                except (ValueError, TypeError):
+                    pass
+
+            fetched += 1
+            if fetched % 100 == 0:
+                logger.info(f"财报补充进度: {fetched}/{len(missing)}")
+            time.sleep(0.15)
+
+        if new_rows:
+            df = pd.DataFrame(new_rows)
+            self._upsert_df(df, "financials")
+            logger.info(f"财报数据补充完成: {len(new_rows)} 条")
+
     def fetch_money_flow(self, trade_date: str) -> pd.DataFrame:
         logger.info(f"baostock分钟线估算资金流向: {trade_date}")
         stock_list = None
@@ -265,6 +603,9 @@ class TushareCollector:
                 suspended = set(susp_df["ts_code"].tolist())
         except Exception:
             logger.opt(exception=True).debug("获取资金流股票列表异常")
+
+        if stock_list:
+            stock_list = self._filter_stocks_for_moneyflow(stock_list, trade_date)
 
         df = self._mf_estimator.estimate_flow_for_date(trade_date, stock_list, suspended)
         if not df.empty:

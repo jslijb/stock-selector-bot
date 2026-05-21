@@ -1,9 +1,11 @@
+import os
 import json
 import numpy as np
 import pandas as pd
 from loguru import logger
 from datetime import datetime
 from typing import List, Dict, Optional
+from modelscope import snapshot_download
 from sentence_transformers import SentenceTransformer
 from ..config import get_config
 from ..data.db import Database
@@ -64,8 +66,10 @@ class EpisodicMemory:
         else:
             logger.warning("ChromaDB不可用，使用DuckDB降级存储(无向量检索)")
 
-        self.encoder = SentenceTransformer(self.cfg.embedding.model_name, device=self.cfg.embedding.device)
-        logger.info(f"Embedding模型加载: {self.cfg.embedding.model_name}")
+        # 从魔塔社区下载模型
+        model_dir = snapshot_download(self.cfg.embedding.model_name, cache_dir=os.path.join(os.path.expanduser("~"), ".cache", "modelscope"))
+        self.encoder = SentenceTransformer(model_dir, device=self.cfg.embedding.device)
+        logger.info(f"Embedding模型加载(魔塔社区): {self.cfg.embedding.model_name} -> {model_dir}")
 
     @staticmethod
     def _to_date(d: str) -> str:

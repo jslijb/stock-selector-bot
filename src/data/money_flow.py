@@ -90,6 +90,24 @@ class MoneyFlowEstimator:
                 bars.append(row)
             return bars if bars else None
 
+    def query_profit_data(self, baocode: str, year: int, quarter: int) -> Optional[dict]:
+        with self._bs_lock:
+            if not self._logged_in:
+                return None
+            try:
+                rs = bs.query_profit_data(code=baocode, year=year, quarter=quarter)
+                if rs.error_code != "0":
+                    return None
+                rows = []
+                while rs.next():
+                    rows.append(rs.get_row_data())
+                if not rows:
+                    return None
+                return dict(zip(rs.fields, rows[0]))
+            except Exception as e:
+                logger.debug(f"baostock财报查询异常 {baocode} {year}Q{quarter}: {e}")
+                return None
+
     @staticmethod
     def _ts_to_baocode(ts_code: str) -> str:
         parts = ts_code.split(".")
