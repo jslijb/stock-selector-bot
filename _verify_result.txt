@@ -1,0 +1,16 @@
+﻿conda.exe : Traceback (most recent call last):
+所在位置 D:\ProgramData\Miniforge3\shell\condabin\Conda.psm1:153 字符: 17
++ ...             & $Env:CONDA_EXE $Env:_CE_M $Env:_CE_CONDA $Command @Othe ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "D:\Python\agent_a_sk\_verify_cap.py", line 3, in <module>
+    conn = duckdb.connect("D:/Python/agent_a_sk/data/stock_agent.duckdb", read_only=True)
+_duckdb.IOException: IO Error: Cannot open file "D:\Python\agent_a_sk\data\stock_agent.duckdb": 鍙︿竴涓\ufffd绋嬪簭姝ｅ湪浣跨敤姝ゆ枃浠
+讹紝杩涚▼鏃犳硶璁块棶銆\ufffd
+
+
+File is already open in 
+D:\ProgramData\miniforge3\envs\bigmodel\python.exe (PID 31124)
+ERROR conda.cli.main_run:execute(142): `conda run python _verify_cap.py` failed. (See above for error)

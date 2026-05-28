@@ -1,0 +1,41 @@
+max_price: 100.0
+min_market_cap: 100.0
+exclude_cyb: true
+exclude_bj: true
+exclude_st: true
+excluded_industries:
+  - 房地产
+  - 房地产开发
+  - 房地产服务
+  - 纺织制造
+  - 服装
+  - 影视
+  - 院线
+loss_years_noncyclical: 2
+loss_years_cyclical: 5
+min_avg_revenue: 30.0
+revenue_years: 2
+cyclical_industries:
+  - 煤炭
+  - 石油石化
+  - 有色金属
+  - 贵金属
+  - 小金属
+  - 钢铁
+  - 基础化工
+  - 建筑材料
+  - 水泥
+  - 玻璃玻纤
+  - 工程机械
+  - 通用设备
+  - 轨交设备
+  - 电网设备
+  - 锂电
+  - 汽车
+  - 乘用车
+  - 家电
+  - 航运
+  - 航空
+  - 船舶制造
+  - 证券
+  - 保险

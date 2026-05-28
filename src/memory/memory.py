@@ -5,10 +5,14 @@ import pandas as pd
 from loguru import logger
 from datetime import datetime
 from typing import List, Dict, Optional
-from modelscope import snapshot_download
-from sentence_transformers import SentenceTransformer
 from ..config import get_config
 from ..data.db import Database
+
+try:
+    from modelscope import snapshot_download as ms_snapshot_download
+    _MODELSCOPE_AVAILABLE = True
+except ImportError:
+    _MODELSCOPE_AVAILABLE = False
 
 try:
     from chromadb import PersistentClient
@@ -66,10 +70,45 @@ class EpisodicMemory:
         else:
             logger.warning("ChromaDB不可用，使用DuckDB降级存储(无向量检索)")
 
-        # 从魔塔社区下载模型
-        model_dir = snapshot_download(self.cfg.embedding.model_name, cache_dir=os.path.join(os.path.expanduser("~"), ".cache", "modelscope"))
+        model_name = self.cfg.embedding.model_name
+        model_dir = self._download_model_from_modelscope(model_name, self.cfg.embedding.model_path)
+        from sentence_transformers import SentenceTransformer
         self.encoder = SentenceTransformer(model_dir, device=self.cfg.embedding.device)
-        logger.info(f"Embedding模型加载(魔塔社区): {self.cfg.embedding.model_name} -> {model_dir}")
+        logger.info(f"Embedding模型加载: {model_name} (from {model_dir})")
+
+    @staticmethod
+    def _download_model_from_modelscope(model_name: str, model_path: str = "") -> str:
+        import os as _os
+
+        if model_path and _os.path.isdir(model_path):
+            logger.info(f"使用配置模型路径: {model_path}")
+            return model_path
+
+        local_candidates = [
+            _os.path.join(_os.path.expanduser("~"), ".cache", "modelscope", "hub",
+                           model_name.replace("/", _os.sep).replace(".", "_")),
+            _os.path.join(_os.path.expanduser("~"), ".cache", "huggingface", "hub",
+                           f"models--{model_name.replace('/', '--')}"),
+        ]
+        for candidate in local_candidates:
+            if _os.path.isdir(candidate) and any(
+                f.endswith(".bin") or f.endswith(".safetensors") or f.endswith(".pt")
+                for f in _os.listdir(candidate)
+            ):
+                logger.info(f"使用本地模型: {candidate}")
+                return candidate
+
+        if _MODELSCOPE_AVAILABLE:
+            logger.info(f"本地无模型，从魔塔社区下载: {model_name}")
+            try:
+                model_dir = ms_snapshot_download(model_name)
+                logger.info(f"模型下载完成: {model_dir}")
+                return model_dir
+            except Exception as e:
+                logger.warning(f"魔塔社区下载失败: {e}")
+
+        logger.warning("使用模型名称直接加载(可能触发远程下载)")
+        return model_name
 
     @staticmethod
     def _to_date(d: str) -> str:

@@ -27,6 +27,7 @@ class LLMConfig:
 class EmbeddingConfig:
     model_name: str = "BAAI/bge-large-zh-v1.5"
     device: str = "cpu"
+    model_path: str = ""
 
 
 @dataclass
@@ -49,7 +50,7 @@ class RiskConfig:
     max_single_weight: float = 0.10
     industry_deviation: float = 0.05
     max_price: float = 100.0
-    min_market_cap: float = 20.0
+    min_market_cap: float = 100.0
     min_turnover_rate: float = 2.0
     min_avg_amount: float = 5000.0
     min_revenue: float = 5.0
@@ -216,6 +217,7 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         cfg.embedding = EmbeddingConfig(
             model_name=emb_raw.get("model_name", cfg.embedding.model_name),
             device=emb_raw.get("device", cfg.embedding.device),
+            model_path=emb_raw.get("model_path", cfg.embedding.model_path),
         )
 
         chroma_raw = raw.get("chromadb", {})
@@ -267,6 +269,10 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         sched_raw = raw.get("scheduler", {})
         cfg.check_missing = sched_raw.get("check_missing", cfg.check_missing)
         cfg.auto_backfill = sched_raw.get("auto_backfill", cfg.auto_backfill)
+
+        mf_raw = raw.get("moneyflow", {})
+        cfg.mf_max_workers = mf_raw.get("max_workers", cfg.mf_max_workers)
+        cfg.mf_stock_interval = mf_raw.get("stock_interval", cfg.mf_stock_interval)
 
     llm_raw = _load_llm_config_yaml()
     _apply_llm_config(cfg, llm_raw)

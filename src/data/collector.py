@@ -366,10 +366,10 @@ class TushareCollector:
                 "SELECT ts_code FROM daily_basic WHERE trade_date = ? AND total_mv < ?",
                 [date_param, cap_thresh],
             )
+            before = len(remaining)
             if not cap_df.empty:
-                before = len(remaining)
                 remaining -= set(cap_df["ts_code"].tolist())
-                logger.debug(f"过滤小市值(<{min_cap}亿): {before - len(remaining)} 只")
+            logger.debug(f"过滤小市值(<{min_cap}亿): {before - len(remaining)} 只")
         except Exception:
             logger.opt(exception=True).debug("市值过滤异常")
 
@@ -679,6 +679,10 @@ class TushareCollector:
             return
         if self._has_daily_data(trade_date):
             logger.debug(f"数据已存在，跳过采集: {trade_date}")
+            try:
+                self.fetch_daily_basic(trade_date)
+            except Exception as e:
+                logger.opt(exception=True).debug(f"每日指标补充采集失败 {trade_date}: {e}")
             return
         logger.info(f"=== 采集日线数据: {trade_date} ===")
         price_df = None
@@ -695,6 +699,10 @@ class TushareCollector:
             self.fetch_adj_factor(trade_date)
         except Exception as e:
             logger.opt(exception=True).debug(f"复权因子采集跳过 {trade_date}: {e}")
+        try:
+            self.fetch_daily_basic(trade_date)
+        except Exception as e:
+            logger.opt(exception=True).warning(f"每日指标采集失败 {trade_date}: {e}")
         if not skip_money_flow:
             try:
                 self.fetch_money_flow(trade_date)

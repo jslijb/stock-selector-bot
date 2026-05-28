@@ -120,7 +120,14 @@ class Scheduler:
                 if not mv_df.empty:
                     mv_threshold = self.cfg.risk.min_market_cap * 10000.0
                     small_mv = set(mv_df[mv_df["total_mv"] < mv_threshold]["ts_code"])
-                    mask &= ~factor_pivot.index.isin(small_mv)
+                    filtered_count = len(small_mv & set(factor_pivot.index))
+                    if filtered_count > 0:
+                        mask &= ~factor_pivot.index.isin(small_mv)
+                        logger.debug(f"过滤小市值(<{self.cfg.risk.min_market_cap}亿): {filtered_count} 只")
+                else:
+                    logger.warning(f"市值过滤: daily_basic无{dt}数据，小市值过滤未生效")
+            else:
+                logger.warning("市值过滤: daily_basic表不存在，小市值过滤未生效")
         except Exception as e:
             raise RuntimeError(f"市值过滤失败: {e}") from e
 

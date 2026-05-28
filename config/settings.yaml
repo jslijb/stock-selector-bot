@@ -15,6 +15,7 @@ tushare:
 embedding:
   model_name: "BAAI/bge-large-zh-v1.5"
   device: "cpu"
+  model_path: "D:\\models\\modelscope\\BAAI\\bge-large-zh-v1___5"
 
 chromadb:
   persist_dir: "./data/chroma_db"
@@ -36,7 +37,7 @@ risk:
   industry_deviation: 0.05
 
   max_price: 100.0
-  min_market_cap: 20.0
+  min_market_cap: 100.0
   min_turnover_rate: 2.0
   min_avg_amount: 5000.0
   min_revenue: 5.0
